@@ -22,11 +22,30 @@ except ImportError:
 # --- Page Config ---
 st.set_page_config(page_title="Dispatch System", page_icon="🚛", layout="wide")
 
-import os
+import pandas as pd
+import requests
 
-# --- Dynamic Path Settings ---
-if os.path.exists(r"C:\Dispatch_System"):
-    BASE_DIR = r"C:\Dispatch_System"
+# --- Google Sheet Base URL Setup ---
+# Apni Google Sheet ka export CSV link yahan daalein (jaise mobile_dashboard.py mein hai)
+SHEET_BASE_URL = "https://docs.google.com/spreadsheets/d/1Rajn2oci_FNlzKXlnf7qo5JKH-JCznwzXUf7WlwQXl0/edit?gid=431706490#gid=431706490"
+
+@st.cache_data(ttl=10)
+def load_data_from_gsheet(sheet_name="Sheet1"):
+    try:
+        url = f"{SHEET_BASE_URL}&sheet={sheet_name}"
+        df = pd.read_csv(url)
+        return df
+    except Exception as e:
+        # Fallback agar sheet name se data na mile toh direct read karein
+        try:
+            df = pd.read_csv(SHEET_BASE_URL)
+            return df
+        except Exception as err:
+            st.error(f"Google Sheet load karne mein error aaya: {err}")
+            return pd.DataFrame()
+
+# Data load karne ke liye ab aap yeh use karenge:
+df = load_data_from_gsheet("Sheet1") # Apni sheet ka naam yahan likh dein
 else:
     BASE_DIR = os.path.dirname(__file__)
 
