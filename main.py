@@ -527,7 +527,7 @@ elif page == "🔐 Admin Panel":
                     ]
                     worksheet.append_row(headers)
                 
-                if mode == "नई एंट्री करें":
+                if mode == "नई एंट्री करें": 
                     all_vals = worksheet.get_all_values()
                     next_row_idx = len(all_vals) + 1
                     row_data = [
