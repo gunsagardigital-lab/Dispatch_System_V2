@@ -29,7 +29,7 @@ BASE_DIR = os.path.dirname(__file__)
 REPORTS_DIR = os.path.join(BASE_DIR, "Reports")
 NOTICE_TXT_FILE = os.path.join(BASE_DIR, "notice.txt")
 PASSWORD_FILE = os.path.join(BASE_DIR, "password.txt")
-CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
+CREDENTIALS_PATH = os.path.abspath(os.path.join(BASE_DIR, "credentials.json"))
 
 if not os.path.exists(REPORTS_DIR):
     os.makedirs(REPORTS_DIR)
