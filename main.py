@@ -507,7 +507,7 @@ elif page == "🔐 Admin Panel":
                     remarks = st.text_input("Remarks", value=def_remarks)
                     
                 if st.form_submit_button("💾 डेटा सेव करें"):
-    if mode == "नई एंट्री करें" and not veh: 
+                if mode == "नई एंट्री करें" and not veh: 
         st.error("गाड़ी नंबर अनिवार्य है!")
     else:
         try:
