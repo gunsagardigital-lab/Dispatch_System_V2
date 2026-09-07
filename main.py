@@ -148,10 +148,13 @@ def open_pdf_safely(pdf_filename):
         except Exception:
             pass
 
+# --- PDF Generation Functions (Cloud Friendly) ---
 def generate_loader_list_pdf(target_date):
     try:
         df = load_data_from_gsheet(target_date)
-        if df.empty: return
+        if df.empty:
+            st.warning("डेटा उपलब्ध नहीं है!")
+            return
         
         headers = ["Sr. No.", "In Time", "Vehicle No.", "Destination", "Plan (Tons)", "Prog No."]
         table_data = [headers]
@@ -167,7 +170,7 @@ def generate_loader_list_pdf(target_date):
                     table_data.append([str(sr_counter), clean_time, str(row_list[4]), str(row_list[6]), str(row_list[7]), str(row_list[3])])
                     sr_counter += 1
 
-        pdf_filename = os.path.join(REPORTS_DIR, f"Loader_List_{target_date}.pdf")
+        pdf_filename = os.path.join(REPORTS_DIR, f"Loader_List_{target_date.replace('.', '_')}.pdf")
         doc = SimpleDocTemplate(pdf_filename, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
         styles = getSampleStyleSheet()
         title_style = ParagraphStyle("TitleStyle", parent=styles["Heading1"], fontName=FONT_BOLD_NAME, fontSize=15, textColor=colors.HexColor("#1F4E78"), alignment=1, spaceAfter=10)
@@ -180,15 +183,20 @@ def generate_loader_list_pdf(target_date):
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
         ]))
         doc.build([Paragraph(f"M/s Surya Roshni Limited - Hindupur<br/><b>LOADER DISPATCH LIST ({target_date})</b>", title_style), Spacer(1, 5), t])
-        open_pdf_safely(pdf_filename)
-        st.success("Loader List PDF जनरेट हो गई!")
+        
+        # Streamlit download button
+        with open(pdf_filename, "rb") as pdf_file:
+            st.download_button(label="📥 Download Loader List PDF", data=pdf_file, file_name=f"Loader_List_{target_date}.pdf", mime="application/pdf")
+        st.success("Loader List PDF तैयार है, नीचे डाउनलोड बटन पर क्लिक करें!")
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"PDF Error: {e}")
 
 def generate_status_pdf(selected_status, target_date):
     try:
         df = load_data_from_gsheet(target_date)
-        if df.empty: return
+        if df.empty:
+            st.warning("डेटा उपलब्ध नहीं है!")
+            return
         
         headers = ["Sr.", "In Date", "Time", "Prog No.", "Vehicle No.", "Transport Name", "Destination", "Plan", "ADV", "Actual", "Status", "Remarks"]
         table_data = [headers]
@@ -203,7 +211,7 @@ def generate_status_pdf(selected_status, target_date):
                     sr_counter += 1
                     table_data.append([str(cell) if pd.notna(cell) else "" for cell in row_cleaned])
 
-        pdf_filename = os.path.join(REPORTS_DIR, f"Dispatch_{selected_status.replace(' ', '_')}_{target_date}.pdf")
+        pdf_filename = os.path.join(REPORTS_DIR, f"Dispatch_{selected_status.replace(' ', '_')}_{target_date.replace('.', '_')}.pdf")
         doc = SimpleDocTemplate(pdf_filename, pagesize=landscape(A4), rightMargin=15, leftMargin=15, topMargin=20, bottomMargin=20)
         styles = getSampleStyleSheet()
         title_style = ParagraphStyle("TitleStyle", parent=styles["Heading1"], fontName=FONT_BOLD_NAME, fontSize=15, textColor=colors.HexColor("#1F4E78"), alignment=1, spaceAfter=12)
@@ -216,10 +224,13 @@ def generate_status_pdf(selected_status, target_date):
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
         ]))
         doc.build([Paragraph(f"M/s Surya Roshni Limited - Hindupur ({selected_status} Report - {target_date})", title_style), Spacer(1, 5), t])
-        open_pdf_safely(pdf_filename)
-        st.success(f"{selected_status} Report PDF जनरेट हो गई!")
+        
+        # Streamlit download button
+        with open(pdf_filename, "rb") as pdf_file:
+            st.download_button(label=f"📥 Download {selected_status} PDF", data=pdf_file, file_name=f"Dispatch_{selected_status}_{target_date}.pdf", mime="application/pdf")
+        st.success(f"{selected_status} Report PDF तैयार है, नीचे डाउनलोड बटन पर क्लिक करें!")
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"PDF Error: {e}")
 
 # --- Navigation Sidebar ---
 page = st.sidebar.radio("📋 Navigation", ["🚛 Live Dashboard", "🔐 Admin Panel"])
