@@ -23,7 +23,7 @@ except ImportError:
 st.set_page_config(page_title="Dispatch System", page_icon="🚛", layout="wide")
 
 # --- Google Sheet Base URL & Cloud Dynamic Paths ---
-SHEET_BASE_URL = "https://docs.google.com/spreadsheets/d/1Rajn2oci_FN1zkKXInf7go5JKH-JCzhwzXUf7wWQxlo/export?format=csv&gid="
+SHEET_BASE_URL = "https://docs.google.com/spreadsheets/d/1Rajn2oci_FNlzKXlnf7qo5JKH-JCznwzXUf7WlwQXl0/export?format=csv"
 
 BASE_DIR = os.path.dirname(__file__)
 REPORTS_DIR = os.path.join(BASE_DIR, "Reports")
