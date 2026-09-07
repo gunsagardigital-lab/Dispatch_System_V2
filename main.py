@@ -529,7 +529,7 @@ elif page == "🔐 Admin Panel":
                         
                         sync_row_to_google_sheet(sel_sheet, row_data)
                         st.success("डेटा सफलतापूर्वक Google Sheet में सेव/अपडेट कर दिया गया!")
-                        st.rer()
+                        st.rerun()
 
     with tab2:
         st.subheader("📊 रिपोर्ट्स और PDF जनरेटर")
