@@ -509,6 +509,7 @@ elif page == "🔐 Admin Panel":
                 if st.form_submit_button("💾 डेटा सेव करें"):
                     if mode == "नई एंट्री करें" and not veh: 
                         st.error("गाड़ी नंबर अनिवार्य है!")
+                        st.cache_data.clear()
                     else:
                         t_row = len(df_adm) + 2
                         row_data = [
