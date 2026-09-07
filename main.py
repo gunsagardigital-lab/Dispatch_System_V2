@@ -507,29 +507,73 @@ elif page == "🔐 Admin Panel":
                     remarks = st.text_input("Remarks", value=def_remarks)
                     
                 if st.form_submit_button("💾 डेटा सेव करें"):
-                    if mode == "नई एंट्री करें" and not veh: 
-                        st.error("गाड़ी नंबर अनिवार्य है!")
-                        st.cache_data.clear()
-                    else:
-                        t_row = len(df_adm) + 2
+    if mode == "नई एंट्री करें" and not veh: 
+        st.error("गाड़ी नंबर अनिवार्य है!")
+    else:
+        try:
+            if not GOOGLE_SHEETS_AVAILABLE or not os.path.exists(CREDENTIALS_PATH):
+                st.error("Google Sheets credentials.json file nahi mili! Admin panel update ke liye zaroori hai.")
+            else:
+                gc = gspread.service_account(filename=CREDENTIALS_PATH)
+                sh = gc.open("Dispatch_Entry_Register")
+                try:
+                    worksheet = sh.worksheet(sel_sheet)
+                except gspread.exceptions.WorksheetNotFound:
+                    worksheet = sh.add_worksheet(title=sel_sheet, rows=100, cols=12)
+                    headers = [
+                        "Sr. No.", "In Date", "In Time", "Program No.", "Vehicle No.",
+                        "Transport Name", "Destinations", "Loading Plan", "ADV",
+                        "Actual Loading", "Current Status", "Remarks (Shift)"
+                    ]
+                    worksheet.append_row(headers)
+                
+                if mode == "नई एंट्री करें":
+                    all_vals = worksheet.get_all_values()
+                    next_row_idx = len(all_vals) + 1
+                    row_data = [
+                        next_row_idx - 1,
+                        sel_sheet,
+                        datetime.now().strftime("%H:%M"),
+                        prog,
+                        veh,
+                        trans,
+                        dest,
+                        plan,
+                        "",
+                        actual if actual > 0 else "",
+                        status,
+                        remarks
+                    ]
+                    worksheet.append_row(row_data)
+                    st.success("नयी एंट्री Google Sheet में सफलतापूर्वक जोड़ दी गई!")
+                else:
+                    cell = worksheet.find(sel_v)
+                    if cell:
+                        r_idx = cell.row
                         row_data = [
-                            len(df_adm) + 1,
+                            r_idx - 1,
                             sel_sheet,
-                            datetime.now().strftime("%H:%M"),
+                            str(worksheet.cell(r_idx, 3).value),
                             prog,
-                            veh if mode == "नई एंट्री करें" else sel_v,
+                            sel_v,
                             trans,
                             dest,
                             plan,
-                            "",
+                            str(worksheet.cell(r_idx, 9).value),
                             actual if actual > 0 else "",
                             status,
                             remarks
                         ]
-                        
-                        sync_row_to_google_sheet(sel_sheet, row_data)
-                        st.success("डेटा सफलतापूर्वक Google Sheet में सेव/अपडेट कर दिया गया!")
-                        st.rerun()
+                        for col_idx, val in enumerate(row_data, 1):
+                            worksheet.update_cell(r_idx, col_idx, "" if val is None else str(val))
+                        st.success("Google Sheet mein gaadi ka data successfully update ho gaya!")
+                    else:
+                        st.error("Google Sheet mein yeh gaadi nahi mili!")
+                
+                st.cache_data.clear()
+                st.rerun()
+        except Exception as e:
+            st.error(f"Google Sheet Update Error: {e}")
 
     with tab2:
         st.subheader("📊 रिपोर्ट्स और PDF जनरेटर")
