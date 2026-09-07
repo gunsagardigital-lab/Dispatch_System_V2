@@ -22,11 +22,19 @@ except ImportError:
 # --- Page Config ---
 st.set_page_config(page_title="Dispatch System", page_icon="🚛", layout="wide")
 
-MAIN_FILE = r"C:\Dispatch_System\Dispatch_Entry_Register.xlsx"
-REPORTS_DIR = r"C:\Dispatch_System\Reports"
-NOTICE_TXT_FILE = r"C:\Dispatch_System\notice.txt"
-PASSWORD_FILE = r"C:\Dispatch_System\password.txt"
-CREDENTIALS_PATH = r"C:\Dispatch_System\credentials.json"
+import os
+
+# --- Dynamic Path Settings ---
+if os.path.exists(r"C:\Dispatch_System"):
+    BASE_DIR = r"C:\Dispatch_System"
+else:
+    BASE_DIR = os.path.dirname(__file__)
+
+MAIN_FILE = os.path.join(BASE_DIR, "Dispatch_Entry_Register.xlsx")
+REPORTS_DIR = os.path.join(BASE_DIR, "Reports")
+NOTICE_TXT_FILE = os.path.join(BASE_DIR, "notice.txt")
+PASSWORD_FILE = os.path.join(BASE_DIR, "password.txt")
+CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
 
 if not os.path.exists(REPORTS_DIR):
     os.makedirs(REPORTS_DIR)
