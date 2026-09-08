@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import os
-import json
 from datetime import datetime, timedelta
 import openpyxl
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -23,16 +22,11 @@ except ImportError:
 # --- Page Config ---
 st.set_page_config(page_title="Dispatch System", page_icon="🚛", layout="wide")
 
-# --- CROSS-PLATFORM PATH CONFIGURATION ---
-BASE_DIR = r"C:\Dispatch_System"
-if not os.path.exists(BASE_DIR):
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-MAIN_FILE = os.path.join(BASE_DIR, "Dispatch_Entry_Register.xlsx")
-REPORTS_DIR = os.path.join(BASE_DIR, "Reports")
-NOTICE_TXT_FILE = os.path.join(BASE_DIR, "notice.txt")
-PASSWORD_FILE = os.path.join(BASE_DIR, "password.txt")
-CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
+MAIN_FILE = r"C:\Dispatch_System\Dispatch_Entry_Register.xlsx"
+REPORTS_DIR = r"C:\Dispatch_System\Reports"
+NOTICE_TXT_FILE = r"C:\Dispatch_System\notice.txt"
+PASSWORD_FILE = r"C:\Dispatch_System\password.txt"
+CREDENTIALS_PATH = r"C:\Dispatch_System\credentials.json"
 
 if not os.path.exists(REPORTS_DIR):
     os.makedirs(REPORTS_DIR)
@@ -77,21 +71,8 @@ def save_notice_to_txt(new_notice):
 
 # --- Google Sheets Sync & Update Helper (Fixes Duplicate Entry Problem) ---
 def sync_row_to_google_sheet(sheet_name, row_data):
-    if not GOOGLE_SHEETS_AVAILABLE:
+    if not GOOGLE_SHEETS_AVAILABLE or not os.path.exists(CREDENTIALS_PATH):
         return
-    
-    # Cloud par agar local credentials file nahi hai toh Streamlit secrets se generate karein
-    if not os.path.exists(CREDENTIALS_PATH) and hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
-        try:
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            with open(CREDENTIALS_PATH, "w") as f:
-                json.dump(creds_dict, f)
-        except Exception as e:
-            print(f"Secrets load error: {e}")
-
-    if not os.path.exists(CREDENTIALS_PATH):
-        return
-
     def background_sync():
         try:
             gc = gspread.service_account(filename=CREDENTIALS_PATH)
@@ -110,24 +91,26 @@ def sync_row_to_google_sheet(sheet_name, row_data):
             cleaned_row = ["" if v is None else str(v) for v in row_data]
             veh_no = cleaned_row[4]  # Vehicle No. Column E (Index 4)
             
-            # Sirf Column 5 (Vehicle No.) me dhoondhein taaki data aage-piche na ho
+            # Check karein ki vehicle pehle se sheet mein hai ya nahi
             cell = None
             if veh_no:
                 try:
-                    cell = worksheet.find(veh_no, in_column=5)
+                    cell = worksheet.find(veh_no)
                 except:
                     pass
             
             if cell:
+                # Agar vehicle mil gaya, toh purani row ko hi update karein (Duplicate nahi banegi)
                 row_idx = cell.row
                 for col_idx, val in enumerate(cleaned_row, 1):
                     worksheet.update_cell(row_idx, col_idx, val)
             else:
+                # Nayi entry hai toh append karein
                 worksheet.append_row(cleaned_row)
                 all_rows = worksheet.get_all_values()
                 row_idx = len(all_rows)
             
-            # Cambria Font (Size 14) & Row Height 22 set karna + Alignments
+            # Cambria Font (Size 14) & Row Height 29 set karna
             try:
                 worksheet.format(f"A{row_idx}:L{row_idx}", {
                     "textFormat": {
@@ -135,39 +118,9 @@ def sync_row_to_google_sheet(sheet_name, row_data):
                         "fontSize": 14
                     }
                 })
-                worksheet.update_row_height(row_idx, 22)
-                
-                center_cols = ['A', 'B', 'C', 'D', 'E', 'I', 'K', 'L']
-                for col in center_cols:
-                    worksheet.format(f"{col}{row_idx}:{col}{row_idx}", {
-                        "horizontalAlignment": "CENTER",
-                        "verticalAlignment": "MIDDLE"
-                    })
-                
-                left_cols = ['F', 'G']
-                for col in left_cols:
-                    worksheet.format(f"{col}{row_idx}:{col}{row_idx}", {
-                        "horizontalAlignment": "LEFT",
-                        "verticalAlignment": "MIDDLE"
-                    })
-                
-                right_cols = ['H', 'J']
-                for col in right_cols:
-                    worksheet.format(f"{col}{row_idx}:{col}{row_idx}", {
-                        "horizontalAlignment": "RIGHT",
-                        "verticalAlignment": "MIDDLE"
-                    })
-                
-                worksheet.format(f"A{row_idx}:L{row_idx}", {
-                    "borders": {
-                        "top": {"style": "SOLID", "color": {"red": 0, "green": 0, "blue": 0}},
-                        "bottom": {"style": "SOLID", "color": {"red": 0, "green": 0, "blue": 0}},
-                        "left": {"style": "SOLID", "color": {"red": 0, "green": 0, "blue": 0}},
-                        "right": {"style": "SOLID", "color": {"red": 0, "green": 0, "blue": 0}}
-                    }
-                })
-            except Exception as fmt_err:
-                print(f"Formatting Error (Ignored): {fmt_err}")
+                worksheet.update_row_height(row_idx, 29)
+            except Exception:
+                pass
                 
         except Exception as e:
             print(f"Google Sheet Sync Error: {e}")
@@ -592,6 +545,7 @@ elif page == "🔐 Admin Panel":
                                 ws.cell(row=target_row_idx, column=11, value=status)
                                 ws.cell(row=target_row_idx, column=12, value=remarks)
                                 
+                                # Google Sheet aur local ke liye updated row data tayar karna
                                 row_data = [
                                     target_row_idx - 3,
                                     sel_sheet,
