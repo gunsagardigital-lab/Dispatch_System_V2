@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+import json
 from datetime import datetime, timedelta
 import openpyxl
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -22,19 +23,21 @@ except ImportError:
 # --- Page Config ---
 st.set_page_config(page_title="Dispatch System", page_icon="🚛", layout="wide")
 
-# --- Google Sheet Base URL & Cloud Dynamic Paths ---
-SHEET_BASE_URL = "https://docs.google.com/spreadsheets/d/1Rajn2oci_FNlzKXlnf7qo5JKH-JCznwzXUf7WlwQXl0/export?format=csv"
+# --- CROSS-PLATFORM PATH CONFIGURATION ---
+BASE_DIR = r"C:\Dispatch_System"
+if not os.path.exists(BASE_DIR):
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-BASE_DIR = os.path.dirname(__file__)
+MAIN_FILE = os.path.join(BASE_DIR, "Dispatch_Entry_Register.xlsx")
 REPORTS_DIR = os.path.join(BASE_DIR, "Reports")
 NOTICE_TXT_FILE = os.path.join(BASE_DIR, "notice.txt")
 PASSWORD_FILE = os.path.join(BASE_DIR, "password.txt")
-CREDENTIALS_PATH = os.path.abspath(os.path.join(BASE_DIR, "credentials.json"))
+CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
 
 if not os.path.exists(REPORTS_DIR):
     os.makedirs(REPORTS_DIR)
 
-# --- Register Font for PDF ---
+# --- Register Cambria Font for PDF ---
 FONT_NAME = "Helvetica"
 FONT_BOLD_NAME = "Helvetica-Bold"
 try:
@@ -72,43 +75,134 @@ def save_notice_to_txt(new_notice):
     except:
         return False
 
-# --- Google Sheets Data Loader ---
-@st.cache_data(ttl=10)
-def load_data_from_gsheet(sheet_name="Sheet1"):
-    try:
-        url = f"{SHEET_BASE_URL}&sheet={sheet_name}"
-        df = pd.read_csv(url, header=2)
-        return df
-    except Exception:
+# --- Google Sheets Sync & Update Helper (Fixes Duplicate Entry Problem) ---
+def sync_row_to_google_sheet(sheet_name, row_data):
+    if not GOOGLE_SHEETS_AVAILABLE:
+        return
+    
+    # Cloud par agar local credentials file nahi hai toh Streamlit secrets se generate karein
+    if not os.path.exists(CREDENTIALS_PATH) and hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
         try:
-            df = pd.read_csv(SHEET_BASE_URL, header=2)
-            return df
-        except Exception:
-            return pd.DataFrame()
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            with open(CREDENTIALS_PATH, "w") as f:
+                json.dump(creds_dict, f)
+        except Exception as e:
+            print(f"Secrets load error: {e}")
 
-# --- PDF Generation Functions (Cloud Friendly with Download Button) ---
+    if not os.path.exists(CREDENTIALS_PATH):
+        return
+
+    def background_sync():
+        try:
+            gc = gspread.service_account(filename=CREDENTIALS_PATH)
+            sh = gc.open("Dispatch_Entry_Register")
+            try:
+                worksheet = sh.worksheet(sheet_name)
+            except gspread.exceptions.WorksheetNotFound:
+                worksheet = sh.add_worksheet(title=sheet_name, rows=100, cols=12)
+                headers = [
+                    "Sr. No.", "In Date", "In Time", "Program No.", "Vehicle No.",
+                    "Transport Name", "Destinations", "Loading Plan", "ADV",
+                    "Actual Loading", "Current Status", "Remarks (Shift)"
+                ]
+                worksheet.append_row(headers)
+            
+            cleaned_row = ["" if v is None else str(v) for v in row_data]
+            veh_no = cleaned_row[4]  # Vehicle No. Column E (Index 4)
+            
+            # Sirf Column 5 (Vehicle No.) me dhoondhein taaki data aage-piche na ho
+            cell = None
+            if veh_no:
+                try:
+                    cell = worksheet.find(veh_no, in_column=5)
+                except:
+                    pass
+            
+            if cell:
+                row_idx = cell.row
+                for col_idx, val in enumerate(cleaned_row, 1):
+                    worksheet.update_cell(row_idx, col_idx, val)
+            else:
+                worksheet.append_row(cleaned_row)
+                all_rows = worksheet.get_all_values()
+                row_idx = len(all_rows)
+            
+            # Cambria Font (Size 14) & Row Height 22 set karna + Alignments
+            try:
+                worksheet.format(f"A{row_idx}:L{row_idx}", {
+                    "textFormat": {
+                        "fontFamily": "Cambria",
+                        "fontSize": 14
+                    }
+                })
+                worksheet.update_row_height(row_idx, 22)
+                
+                center_cols = ['A', 'B', 'C', 'D', 'E', 'I', 'K', 'L']
+                for col in center_cols:
+                    worksheet.format(f"{col}{row_idx}:{col}{row_idx}", {
+                        "horizontalAlignment": "CENTER",
+                        "verticalAlignment": "MIDDLE"
+                    })
+                
+                left_cols = ['F', 'G']
+                for col in left_cols:
+                    worksheet.format(f"{col}{row_idx}:{col}{row_idx}", {
+                        "horizontalAlignment": "LEFT",
+                        "verticalAlignment": "MIDDLE"
+                    })
+                
+                right_cols = ['H', 'J']
+                for col in right_cols:
+                    worksheet.format(f"{col}{row_idx}:{col}{row_idx}", {
+                        "horizontalAlignment": "RIGHT",
+                        "verticalAlignment": "MIDDLE"
+                    })
+                
+                worksheet.format(f"A{row_idx}:L{row_idx}", {
+                    "borders": {
+                        "top": {"style": "SOLID", "color": {"red": 0, "green": 0, "blue": 0}},
+                        "bottom": {"style": "SOLID", "color": {"red": 0, "green": 0, "blue": 0}},
+                        "left": {"style": "SOLID", "color": {"red": 0, "green": 0, "blue": 0}},
+                        "right": {"style": "SOLID", "color": {"red": 0, "green": 0, "blue": 0}}
+                    }
+                })
+            except Exception as fmt_err:
+                print(f"Formatting Error (Ignored): {fmt_err}")
+                
+        except Exception as e:
+            print(f"Google Sheet Sync Error: {e}")
+
+    threading.Thread(target=background_sync, daemon=True).start()
+
+# --- PDF Generation Functions ---
+def open_pdf_safely(pdf_filename):
+    if os.path.exists(pdf_filename):
+        try:
+            webbrowser.open(os.path.abspath(pdf_filename))
+        except Exception:
+            pass
+
 def generate_loader_list_pdf(target_date):
     try:
-        df = load_data_from_gsheet(target_date)
-        if df.empty:
-            st.warning("डेटा उपलब्ध नहीं है!")
-            return
+        if not os.path.exists(MAIN_FILE): return
+        wb = openpyxl.load_workbook(MAIN_FILE)
+        if target_date not in wb.sheetnames: return
+        ws = wb[target_date]
         
         headers = ["Sr. No.", "In Time", "Vehicle No.", "Destination", "Plan (Tons)", "Prog No."]
         table_data = [headers]
         sr_counter = 1
 
-        for _, row in df.iterrows():
-            row_list = list(row)
-            if len(row_list) >= 11 and pd.notna(row_list[4]):
-                status = str(row_list[10]).strip().lower() if row_list[10] is not None else ""
+        for row in ws.iter_rows(min_row=4, values_only=True):
+            if len(row) >= 11 and row[4]:
+                status = str(row[10]).strip().lower() if row[10] is not None else ""
                 if status != "final":
-                    raw_time = str(row_list[2]).strip() if row_list[2] is not None else ""
+                    raw_time = str(row[2]).strip() if row[2] is not None else ""
                     clean_time = raw_time[:5] if len(raw_time) >= 5 else raw_time
-                    table_data.append([str(sr_counter), clean_time, str(row_list[4]), str(row_list[6]), str(row_list[7]), str(row_list[3])])
+                    table_data.append([str(sr_counter), clean_time, str(row[4]) if row[4] else "", str(row[6]) if row[6] else "", str(row[7]) if row[7] else "", str(row[3]) if row[3] else ""])
                     sr_counter += 1
 
-        pdf_filename = os.path.join(REPORTS_DIR, f"Loader_List_{target_date.replace('.', '_')}.pdf")
+        pdf_filename = os.path.join(REPORTS_DIR, f"Loader_List_{target_date}.pdf")
         doc = SimpleDocTemplate(pdf_filename, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
         styles = getSampleStyleSheet()
         title_style = ParagraphStyle("TitleStyle", parent=styles["Heading1"], fontName=FONT_BOLD_NAME, fontSize=15, textColor=colors.HexColor("#1F4E78"), alignment=1, spaceAfter=10)
@@ -121,34 +215,31 @@ def generate_loader_list_pdf(target_date):
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
         ]))
         doc.build([Paragraph(f"M/s Surya Roshni Limited - Hindupur<br/><b>LOADER DISPATCH LIST ({target_date})</b>", title_style), Spacer(1, 5), t])
-        
-        with open(pdf_filename, "rb") as pdf_file:
-            st.download_button(label="📥 Download Loader List PDF", data=pdf_file, file_name=f"Loader_List_{target_date}.pdf", mime="application/pdf")
-        st.success("Loader List PDF तैयार है, नीचे डाउनलोड बटन पर क्लिक करें!")
+        open_pdf_safely(pdf_filename)
+        st.success("Loader List PDF जनरेट हो गई!")
     except Exception as e:
-        st.error(f"PDF Error: {e}")
+        st.error(f"Error: {e}")
 
 def generate_status_pdf(selected_status, target_date):
     try:
-        df = load_data_from_gsheet(target_date)
-        if df.empty:
-            st.warning("डेटा उपलब्ध नहीं है!")
-            return
+        if not os.path.exists(MAIN_FILE): return
+        wb = openpyxl.load_workbook(MAIN_FILE)
+        if target_date not in wb.sheetnames: return
+        ws = wb[target_date]
         
         headers = ["Sr.", "In Date", "Time", "Prog No.", "Vehicle No.", "Transport Name", "Destination", "Plan", "ADV", "Actual", "Status", "Remarks"]
         table_data = [headers]
         sr_counter = 1
 
-        for _, row in df.iterrows():
-            row_list = list(row)
-            if len(row_list) >= 11 and pd.notna(row_list[10]):
-                if str(row_list[10]).strip().lower() == selected_status.lower():
-                    row_cleaned = list(row_list[:12])
+        for row in ws.iter_rows(min_row=4, values_only=True):
+            if len(row) >= 11 and row[10]:
+                if str(row[10]).strip().lower() == selected_status.lower():
+                    row_cleaned = list(row[:12])
                     row_cleaned[0] = sr_counter
                     sr_counter += 1
-                    table_data.append([str(cell) if pd.notna(cell) else "" for cell in row_cleaned])
+                    table_data.append([str(cell) if cell is not None else "" for cell in row_cleaned])
 
-        pdf_filename = os.path.join(REPORTS_DIR, f"Dispatch_{selected_status.replace(' ', '_')}_{target_date.replace('.', '_')}.pdf")
+        pdf_filename = os.path.join(REPORTS_DIR, f"Dispatch_{selected_status.replace(' ', '_')}_{target_date}.pdf")
         doc = SimpleDocTemplate(pdf_filename, pagesize=landscape(A4), rightMargin=15, leftMargin=15, topMargin=20, bottomMargin=20)
         styles = getSampleStyleSheet()
         title_style = ParagraphStyle("TitleStyle", parent=styles["Heading1"], fontName=FONT_BOLD_NAME, fontSize=15, textColor=colors.HexColor("#1F4E78"), alignment=1, spaceAfter=12)
@@ -161,12 +252,10 @@ def generate_status_pdf(selected_status, target_date):
             ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
         ]))
         doc.build([Paragraph(f"M/s Surya Roshni Limited - Hindupur ({selected_status} Report - {target_date})", title_style), Spacer(1, 5), t])
-        
-        with open(pdf_filename, "rb") as pdf_file:
-            st.download_button(label=f"📥 Download {selected_status} PDF", data=pdf_file, file_name=f"Dispatch_{selected_status}_{target_date}.pdf", mime="application/pdf")
-        st.success(f"{selected_status} Report PDF तैयार है, नीचे डाउनलोड बटन पर क्लिक करें!")
+        open_pdf_safely(pdf_filename)
+        st.success(f"{selected_status} Report PDF जनरेट हो गई!")
     except Exception as e:
-        st.error(f"PDF Error: {e}")
+        st.error(f"Error: {e}")
 
 # --- Navigation Sidebar ---
 page = st.sidebar.radio("📋 Navigation", ["🚛 Live Dashboard", "🔐 Admin Panel"])
@@ -188,98 +277,109 @@ if page == "🚛 Live Dashboard":
         </style>
     """, unsafe_allow_html=True)
 
-    current_date = get_shift_date()
-    df = load_data_from_gsheet(current_date)
-    
-    if not df.empty:
-        df.columns = df.columns.astype(str).str.strip()
-        
-        col_veh = next((c for c in df.columns if 'vehicle' in c.lower()), None)
-        col_plan = next((c for c in df.columns if 'plan' in c.lower()), None)
-        col_status = next((c for c in df.columns if 'status' in c.lower()), None)
-        col_actual = next((c for c in df.columns if 'actual' in c.lower()), None)
-        col_time = next((c for c in df.columns if 'time' in c.lower()), None)
-        col_trans = next((c for c in df.columns if 'transport' in c.lower()), None)
-        col_dest = next((c for c in df.columns if 'destination' in c.lower() or 'destinations' in c.lower()), None)
-        col_prog = next((c for c in df.columns if 'prog' in c.lower() or 'pro' in c.lower()), None)
-        
-        if col_veh: df = df.dropna(subset=[col_veh])
-        total_vehicles = len(df)
-        total_plan_mt = float(df[col_plan].sum()) if col_plan and not df.empty else 0.0
-        
-        ul_df = df[df[col_status].astype(str).str.lower().str.contains('under loading', na=False)].copy() if col_status else pd.DataFrame()
-        final_df = df[df[col_status].astype(str).str.lower().str.contains('final', na=False)].copy() if col_status else pd.DataFrame()
-        
-        ul_plan_sum = float(ul_df[col_plan].sum()) if col_plan and not ul_df.empty else 0.0
-        final_act_sum = float(final_df[col_actual].sum()) if final_df is not None and not final_df.empty else 0.0
+    if os.path.exists(MAIN_FILE):
+        try:
+            xls = pd.ExcelFile(MAIN_FILE)
+            sheets = [s for s in xls.sheet_names if s != "Master"]
+            current_date = get_shift_date()
+            sheet_to_use = current_date if current_date in sheets else (sheets[-1] if sheets else "")
+            
+            if sheet_to_use:
+                df = pd.read_excel(MAIN_FILE, sheet_name=sheet_to_use, header=2)
+                df.columns = df.columns.astype(str).str.strip()
+                
+                col_veh = next((c for c in df.columns if 'vehicle' in c.lower()), None)
+                col_plan = next((c for c in df.columns if 'plan' in c.lower()), None)
+                col_status = next((c for c in df.columns if 'status' in c.lower()), None)
+                col_actual = next((c for c in df.columns if 'actual' in c.lower()), None)
+                col_time = next((c for c in df.columns if 'time' in c.lower()), None)
+                col_trans = next((c for c in df.columns if 'transport' in c.lower()), None)
+                col_dest = next((c for c in df.columns if 'destination' in c.lower() or 'destinations' in c.lower()), None)
+                col_prog = next((c for c in df.columns if 'prog' in c.lower() or 'pro' in c.lower()), None)
+                
+                if col_veh: df = df.dropna(subset=[col_veh])
+                total_vehicles = len(df)
+                total_plan_mt = float(df[col_plan].sum()) if col_plan and not df.empty else 0.0
+                
+                ul_df = df[df[col_status].astype(str).str.lower().str.contains('under loading', na=False)].copy() if col_status else pd.DataFrame()
+                final_df = df[df[col_status].astype(str).str.lower().str.contains('final', na=False)].copy() if col_status else pd.DataFrame()
+                
+                ul_plan_sum = float(ul_df[col_plan].sum()) if col_plan and not ul_df.empty else 0.0
+                final_act_sum = float(final_df[col_actual].sum()) if final_df is not None and not final_df.empty else 0.0
 
-        st.markdown(f'<div class="main-title">🚛 M/s Surya Roshni Limited - Hindupur</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="sub-title">Smart Dispatch Management System ({current_date})</div>', unsafe_allow_html=True)
-        
-        st.markdown(f"""
-            <table class="grid-table">
-                <tr>
-                    <td style="width: 50%;">
-                        <div class="card-cyan"><div class="card-title">TOTAL PLAN MT</div><div class="card-value">{total_plan_mt:.2f} MT</div></div>
-                    </td>
-                    <td style="width: 50%;">
-                        <div class="card-gray"><div class="card-title">TOTAL VEHICLES</div><div class="card-value">{total_vehicles}</div></div>
-                    </td>
-                </tr>
-                <tr>
-                    <td style="width: 50%;">
-                        <div class="card-orange"><div class="card-title">⏳ UNDER LOADING ({len(ul_df)} Veh)</div><div class="card-value">{ul_plan_sum:.2f} MT</div></div>
-                    </td>
-                    <td style="width: 50%;">
-                        <div class="card-green"><div class="card-title">FINAL VEHICLES ({len(final_df)})</div><div class="card-value">{final_act_sum:.2f} T Actual</div></div>
-                    </td>
-                </tr>
-            </table>
-        """, unsafe_allow_html=True)
-        
-        notice_msg = get_notice_from_txt()
-        st.markdown(f"""
-            <marquee style="background-color: #FFF3CD; color: #856404; padding: 6px; font-weight: bold; font-size: 13px; border: 1px solid #FFEEBA; border-radius: 4px; margin-bottom: 10px;" behavior="scroll" direction="left">
-                {notice_msg}
-            </marquee>
-        """, unsafe_allow_html=True)
-        
-        st.markdown("### 🚚 Under Loading Vehicles (Detailed View)")
-        if not ul_df.empty:
-            view_cols = [c for c in [col_time, col_prog, col_veh, col_trans, col_dest, col_plan] if c]
-            df_view = ul_df[view_cols].copy()
-            df_view.insert(0, 'Sr. No.', range(1, len(df_view) + 1))
-            df_view = df_view.rename(columns={
-                col_time: 'Time',
-                col_prog: 'Program No.',
-                col_veh: 'Vehicle No.',
-                col_trans: 'Transport Name',
-                col_dest: 'Destination',
-                col_plan: 'Plan (MT)'
-            })
-            st.dataframe(df_view, use_container_width=True, hide_index=True)
-        else:
-            st.success("फिलहाल कोई अंडर लोडिंग गाड़ी नहीं है।")
+                st.markdown(f'<div class="main-title">🚛 M/s Surya Roshni Limited - Hindupur</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="sub-title">Smart Dispatch Management System ({sheet_to_use})</div>', unsafe_allow_html=True)
+                
+                st.markdown(f"""
+                    <table class="grid-table">
+                        <tr>
+                            <td style="width: 50%;">
+                                <div class="card-cyan"><div class="card-title">TOTAL PLAN MT</div><div class="card-value">{total_plan_mt:.2f} MT</div></div>
+                            </td>
+                            <td style="width: 50%;">
+                                <div class="card-gray"><div class="card-title">TOTAL VEHICLES</div><div class="card-value">{total_vehicles}</div></div>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="width: 50%;">
+                                <div class="card-orange"><div class="card-title">⏳ UNDER LOADING ({len(ul_df)} Veh)</div><div class="card-value">{ul_plan_sum:.2f} MT</div></div>
+                            </td>
+                            <td style="width: 50%;">
+                                <div class="card-green"><div class="card-title">FINAL VEHICLES ({len(final_df)})</div><div class="card-value">{final_act_sum:.2f} T Actual</div></div>
+                            </td>
+                        </tr>
+                    </table>
+                """, unsafe_allow_html=True)
+                
+                notice_msg = get_notice_from_txt()
+                st.markdown(f"""
+                    <marquee style="background-color: #FFF3CD; color: #856404; padding: 6px; font-weight: bold; font-size: 13px; border: 1px solid #FFEEBA; border-radius: 4px; margin-bottom: 10px;" behavior="scroll" direction="left">
+                        {notice_msg}
+                    </marquee>
+                """, unsafe_allow_html=True)
+                
+                # Under Loading Detailed View Table
+                st.markdown("### 🚚 Under Loading Vehicles (Detailed View)")
+                if not ul_df.empty:
+                    view_cols = [c for c in [col_time, col_prog, col_veh, col_trans, col_dest, col_plan] if c]
+                    df_view = ul_df[view_cols].copy()
+                    df_view.insert(0, 'Sr. No.', range(1, len(df_view) + 1))
+                    df_view = df_view.rename(columns={
+                        col_time: 'Time',
+                        col_prog: 'Program No.',
+                        col_veh: 'Vehicle No.',
+                        col_trans: 'Transport Name',
+                        col_dest: 'Destination',
+                        col_plan: 'Plan (MT)'
+                    })
+                    st.dataframe(df_view, use_container_width=True, hide_index=True)
+                else:
+                    st.success("फिलहाल कोई अंडर लोडिंग गाड़ी नहीं है।")
 
-        st.markdown("### 🏁 Final Vehicles (Completed Dispatch)")
-        if not final_df.empty:
-            final_view_cols = [c for c in [col_time, col_prog, col_veh, col_trans, col_dest, col_plan, col_actual] if c]
-            df_final_view = final_df[final_view_cols].copy()
-            df_final_view.insert(0, 'Sr. No.', range(1, len(df_final_view) + 1))
-            df_final_view = df_final_view.rename(columns={
-                col_time: 'Time',
-                col_prog: 'Program No.',
-                col_veh: 'Vehicle No.',
-                col_trans: 'Transport Name',
-                col_dest: 'Destination',
-                col_plan: 'Plan (MT)',
-                col_actual: 'Actual (Tons)'
-            })
-            st.dataframe(df_final_view, use_container_width=True, hide_index=True)
-        else:
-            st.info("आज अभी तक कोई गाड़ी Final नहीं हुई है।")
+                # Final Vehicles Detailed View Table
+                st.markdown("### 🏁 Final Vehicles (Completed Dispatch)")
+                if not final_df.empty:
+                    final_view_cols = [c for c in [col_time, col_prog, col_veh, col_trans, col_dest, col_plan, col_actual] if c]
+                    df_final_view = final_df[final_view_cols].copy()
+                    df_final_view.insert(0, 'Sr. No.', range(1, len(df_final_view) + 1))
+                    df_final_view = df_final_view.rename(columns={
+                        col_time: 'Time',
+                        col_prog: 'Program No.',
+                        col_veh: 'Vehicle No.',
+                        col_trans: 'Transport Name',
+                        col_dest: 'Destination',
+                        col_plan: 'Plan (MT)',
+                        col_actual: 'Actual (Tons)'
+                    })
+                    st.dataframe(df_final_view, use_container_width=True, hide_index=True)
+                else:
+                    st.info("आज अभी तक कोई गाड़ी Final नहीं हुई है।")
+            else:
+                st.warning("कोई शीट उपलब्ध नहीं है।")
+        except Exception as e:
+            st.error(f"Error: {e}")
     else:
-        st.warning("Google Sheet से डेटा लोड नहीं हो पाया या शीट खाली है।")
+        st.error("Excel file not found!")
 
 # ==================== ADMIN PANEL ====================
 elif page == "🔐 Admin Panel":
@@ -369,14 +469,15 @@ elif page == "🔐 Admin Panel":
     tab1, tab2, tab3 = st.tabs(["📝 एंट्री / अपडेट फॉर्म", "📊 PDF रिपोर्ट्स और WhatsApp", "📢 हिंदी नोटिस बोर्ड (Notice Editor)"])
     
     with tab1:
-        current_date = get_shift_date()
-        sel_sheet = st.text_input("📅 तारीख की शीट का नाम (Tab Name):", value=current_date)
-        
-        df_adm = load_data_from_gsheet(sel_sheet)
-        
-        a_veh, a_prog, a_trans, a_dest, a_plan, a_actual, a_status, a_remarks = None, None, None, None, None, None, None, None
-        if not df_adm.empty:
+        try:
+            xls = pd.ExcelFile(MAIN_FILE)
+            sheets = [s for s in xls.sheet_names if s != "Master"]
+            current_date = get_shift_date()
+            sel_sheet = st.selectbox("📅 तारीख की शीट चुनें:", sheets, index=sheets.index(current_date) if current_date in sheets else 0)
+            
+            df_adm = pd.read_excel(MAIN_FILE, sheet_name=sel_sheet, header=2)
             df_adm.columns = df_adm.columns.astype(str).str.strip()
+            
             a_veh = next((c for c in df_adm.columns if 'vehicle' in c.lower()), None)
             a_prog = next((c for c in df_adm.columns if 'prog' in c.lower() or 'program' in c.lower()), None)
             a_trans = next((c for c in df_adm.columns if 'transport' in c.lower()), None)
@@ -386,89 +487,76 @@ elif page == "🔐 Admin Panel":
             a_status = next((c for c in df_adm.columns if 'status' in c.lower()), None)
             a_remarks = next((c for c in df_adm.columns if 'remark' in c.lower()), None)
             
-        mode = st.radio("ऑप्शन चुनें:", ["नई एंट्री करें", "मौजूदा गाड़ी अपडेट करें"], horizontal=True)
-        
-        sel_v = ""
-        if mode == "मौजूदा गाड़ी अपडेट करें" and a_veh and not df_adm.empty:
-            vehicle_display_list = []
-            veh_mapping = {}
+            mode = st.radio("ऑप्शन चुनें:", ["नई एंट्री करें", "मौजूदा गाड़ी अपडेट करें"], horizontal=True)
             
-            for _, row in df_adm.iterrows():
-                v_no = str(row[a_veh]).strip() if pd.notna(row[a_veh]) else ""
-                if v_no and v_no != "nan":
-                    t_name = str(row[a_trans]) if a_trans and pd.notna(row[a_trans]) else "N/A"
-                    d_name = str(row[a_dest]) if a_dest and pd.notna(row[a_dest]) else "N/A"
-                    s_name = str(row[a_status]) if a_status and pd.notna(row[a_status]) else "Under Loading"
-                    
-                    display_text = f"{v_no} | {t_name} | {d_name} ({s_name})"
-                    vehicle_display_list.append(display_text)
-                    veh_mapping[display_text] = v_no
-            
-            selected_display = st.selectbox("गाड़ी चुनें (Vehicle | Transport | Destination):", vehicle_display_list) if vehicle_display_list else ""
-            sel_v = veh_mapping.get(selected_display, "") if selected_display else ""
-
-        def_prog, def_trans, def_dest, def_plan, def_actual, def_status, def_remarks = "", "", "", 0.0, 0.0, "Under Loading", ""
-        if mode == "मौजूदा गाड़ी अपडेट करें" and sel_v and a_veh and not df_adm.empty:
-            matched_row = df_adm[df_adm[a_veh].astype(str).str.strip() == sel_v]
-            if not matched_row.empty:
-                r = matched_row.iloc[0]
-                def_prog = str(r[a_prog]) if a_prog and pd.notna(r[a_prog]) else ""
-                def_trans = str(r[a_trans]) if a_trans and pd.notna(r[a_trans]) else ""
-                def_dest = str(r[a_dest]) if a_dest and pd.notna(r[a_dest]) else ""
-                def_plan = float(r[a_plan]) if a_plan and pd.notna(r[a_plan]) else 0.0
-                def_actual = float(r[a_actual]) if a_actual and pd.notna(r[a_actual]) else 0.0
-                def_status = str(r[a_status]) if a_status and pd.notna(r[a_status]) else "Under Loading"
-                def_remarks = str(r[a_remarks]) if a_remarks and pd.notna(r[a_remarks]) else ""
-
-        with st.form("entry_form"):
-            col1, col2 = st.columns(2)
-            with col1:
-                if mode == "नई एंट्री करें":
-                    veh = st.text_input("Vehicle No.").upper()
-                else:
-                    veh = st.text_input("Vehicle No.", value=sel_v, disabled=True)
+            if mode == "मौजूदा गाड़ी अपडेट करें" and a_veh and not df_adm.empty:
+                vehicle_display_list = []
+                veh_mapping = {}
                 
-                prog = st.text_input("Program No.", value=def_prog)
-                trans = st.text_input("Transport Name", value=def_trans)
-                dest = st.text_input("Destination", value=def_dest)
-            with col2:
-                plan = st.number_input("Loading Plan (MT)", value=def_plan)
-                actual = st.number_input("Actual Loading (Tons)", value=def_actual)
+                for idx, row in df_adm.iterrows():
+                    v_no = str(row[a_veh]).strip() if pd.notna(row[a_veh]) else ""
+                    if v_no and v_no != "nan":
+                        t_name = str(row[a_trans]) if a_trans and pd.notna(row[a_trans]) else "N/A"
+                        d_name = str(row[a_dest]) if a_dest and pd.notna(row[a_dest]) else "N/A"
+                        s_name = str(row[a_status]) if a_status and pd.notna(row[a_status]) else "Under Loading"
+                        
+                        display_text = f"{v_no} | {t_name} | {d_name} ({s_name})"
+                        vehicle_display_list.append(display_text)
+                        veh_mapping[display_text] = v_no
                 
-                status_options = ["Under Loading", "Final"]
-                s_idx = status_options.index(def_status) if def_status in status_options else 0
-                status = st.selectbox("Status", status_options, index=s_idx)
-                
-                remarks = st.text_input("Remarks", value=def_remarks)
-                
-            submit_btn = st.form_submit_button("💾 डेटा सेव करें")
-            
-        if submit_btn:
-            if mode == "नई एंट्री करें" and not veh: 
-                st.error("गाड़ी नंबर अनिवार्य है!")
+                selected_display = st.selectbox("गाड़ी चुनें (Vehicle | Transport | Destination):", vehicle_display_list) if vehicle_display_list else ""
+                sel_v = veh_mapping.get(selected_display, "") if selected_display else ""
             else:
-                try:
-                    if not GOOGLE_SHEETS_AVAILABLE or not os.path.exists(CREDENTIALS_PATH):
-                        st.error("Google Sheets credentials.json file nahi mili!")
+                sel_v = ""
+
+            def_prog, def_trans, def_dest, def_plan, def_actual, def_status, def_remarks = "", "", "", 0.0, 0.0, "Under Loading", ""
+            if mode == "मौजूदा गाड़ी अपडेट करें" and sel_v and a_veh:
+                matched_row = df_adm[df_adm[a_veh].astype(str).str.strip() == sel_v]
+                if not matched_row.empty:
+                    r = matched_row.iloc[0]
+                    def_prog = str(r[a_prog]) if a_prog and pd.notna(r[a_prog]) else ""
+                    def_trans = str(r[a_trans]) if a_trans and pd.notna(r[a_trans]) else ""
+                    def_dest = str(r[a_dest]) if a_dest and pd.notna(r[a_dest]) else ""
+                    def_plan = float(r[a_plan]) if a_plan and pd.notna(r[a_plan]) else 0.0
+                    def_actual = float(r[a_actual]) if a_actual and pd.notna(r[a_actual]) else 0.0
+                    def_status = str(r[a_status]) if a_status and pd.notna(r[a_status]) else "Under Loading"
+                    def_remarks = str(r[a_remarks]) if a_remarks and pd.notna(r[a_remarks]) else ""
+
+            with st.form("entry_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    if mode == "नई एंट्री करें":
+                        veh = st.text_input("Vehicle No.").upper()
                     else:
-                        gc = gspread.service_account(filename=CREDENTIALS_PATH)
-                        sh = gc.open("Dispatch_Entry_Register")
-                        try:
-                            worksheet = sh.worksheet(sel_sheet)
-                        except gspread.exceptions.WorksheetNotFound:
-                            worksheet = sh.add_worksheet(title=sel_sheet, rows=100, cols=12)
-                            headers = [
-                                "Sr. No.", "In Date", "In Time", "Program No.", "Vehicle No.",
-                                "Transport Name", "Destinations", "Loading Plan", "ADV",
-                                "Actual Loading", "Current Status", "Remarks (Shift)"
-                            ]
-                            worksheet.append_row(headers)
+                        veh = st.text_input("Vehicle No.", value=sel_v, disabled=True)
+                    
+                    prog = st.text_input("Program No.", value=def_prog)
+                    trans = st.text_input("Transport Name", value=def_trans)
+                    dest = st.text_input("Destination", value=def_dest)
+                with col2:
+                    plan = st.number_input("Loading Plan (MT)", value=def_plan)
+                    actual = st.number_input("Actual Loading (Tons)", value=def_actual)
+                    
+                    status_options = ["Under Loading", "Final"]
+                    s_idx = status_options.index(def_status) if def_status in status_options else 0
+                    status = st.selectbox("Status", status_options, index=s_idx)
+                    
+                    remarks = st.text_input("Remarks", value=def_remarks)
+                    
+                if st.form_submit_button("💾 डेटा सेव करें"):
+                    if mode == "नई एंट्री करें" and not veh: 
+                        st.error("गाड़ी नंबर अनिवार्य है!")
+                    else:
+                        wb = openpyxl.load_workbook(MAIN_FILE)
+                        ws = wb[sel_sheet]
                         
                         if mode == "नई एंट्री करें":
-                            all_vals = worksheet.get_all_values()
-                            next_row_idx = len(all_vals) + 1
+                            t_row = 4
+                            while ws.cell(row=t_row, column=5).value is not None: 
+                                t_row += 1
+                            
                             row_data = [
-                                next_row_idx - 1,
+                                t_row - 3,
                                 sel_sheet,
                                 datetime.now().strftime("%H:%M"),
                                 prog,
@@ -481,36 +569,53 @@ elif page == "🔐 Admin Panel":
                                 status,
                                 remarks
                             ]
-                            worksheet.append_row(row_data)
-                            st.success("नयी एंट्री Google Sheet में सफलतापूर्वक जोड़ दी गई!")
+                            
+                            for col_idx, val in enumerate(row_data, 1):
+                                ws.cell(row=t_row, column=col_idx, value=val)
+                                
+                            st.success("नयी एंट्री जोड़ दी गई!")
+                            sync_row_to_google_sheet(sel_sheet, row_data)
+                        
                         else:
-                            cell = worksheet.find(sel_v)
-                            if cell:
-                                r_idx = cell.row
+                            target_row_idx = None
+                            for r_idx in range(4, ws.max_row + 1):
+                                if str(ws.cell(row=r_idx, column=5).value).strip() == sel_v:
+                                    target_row_idx = r_idx
+                                    break
+                            
+                            if target_row_idx:
+                                ws.cell(row=target_row_idx, column=4, value=prog)
+                                ws.cell(row=target_row_idx, column=6, value=trans)
+                                ws.cell(row=target_row_idx, column=7, value=dest)
+                                ws.cell(row=target_row_idx, column=8, value=plan)
+                                ws.cell(row=target_row_idx, column=10, value=actual if actual > 0 else "")
+                                ws.cell(row=target_row_idx, column=11, value=status)
+                                ws.cell(row=target_row_idx, column=12, value=remarks)
+                                
                                 row_data = [
-                                    r_idx - 1,
+                                    target_row_idx - 3,
                                     sel_sheet,
-                                    str(worksheet.cell(r_idx, 3).value),
+                                    str(ws.cell(row=target_row_idx, column=3).value),
                                     prog,
                                     sel_v,
                                     trans,
                                     dest,
                                     plan,
-                                    str(worksheet.cell(r_idx, 9).value),
+                                    str(ws.cell(row=target_row_idx, column=9).value),
                                     actual if actual > 0 else "",
                                     status,
                                     remarks
                                 ]
-                                for col_idx, val in enumerate(row_data, 1):
-                                    worksheet.update_cell(r_idx, col_idx, "" if val is None else str(val))
-                                st.success("Google Sheet mein gaadi ka data successfully update ho gaya!")
+                                
+                                st.success("गाड़ी का डेटा सफलतापूर्वक अपडेट कर दिया गया!")
+                                sync_row_to_google_sheet(sel_sheet, row_data)
                             else:
-                                st.error("Google Sheet mein yeh gaadi nahi mili!")
-                        
-                        st.cache_data.clear()
+                                st.error("गाड़ी Excel शीट में नहीं मिली!")
+
+                        wb.save(MAIN_FILE)
                         st.rerun()
-                except Exception as e:
-                    st.error(f"Google Sheet Update Error: {e}")
+        except Exception as e:
+            st.error(f"Error: {e}")
 
     with tab2:
         st.subheader("📊 रिपोर्ट्स और PDF जनरेटर")
@@ -544,5 +649,4 @@ elif page == "🔐 Admin Panel":
                 st.error("❌ नोटिस सेव करने में समस्या आई।")
 
 if st.button("🔄 Refresh Data"):
-    st.cache_data.clear()
     st.rerun()
